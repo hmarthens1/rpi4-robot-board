@@ -109,11 +109,11 @@ def cmd_sonar(_args):
         print("no answer from the ultrasonic module at I2C 0x77 - plugged into P7/P8/P9?")
         return 1
     sonar.fill(0, 0, 60)
-    print("Distance in mm (Ctrl+C to stop)")
+    print("Distance in mm (Ctrl+C to stop)", flush=True)
     try:
         while True:
             mm = sonar.distance_mm()
-            print(f"{mm:5d} mm" if mm is not None else "  --- no reading")
+            print(f"{mm:5d} mm" if mm is not None else "  --- no reading", flush=True)
             time.sleep(0.2)
     except KeyboardInterrupt:
         pass

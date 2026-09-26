@@ -4,3 +4,6 @@ __pycache__/
 build/
 dist/
 .vscode/
+
+# colcon, when the ROS package is built in place
+ros2/robot_status/*.egg-info/

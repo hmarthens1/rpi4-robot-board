@@ -18,6 +18,10 @@ constexpr int kSonarMaxMm = 5000;
 class Sonar {
 public:
   explicit Sonar(std::unique_ptr<Transport> transport = nullptr);
+  // Is the module on the bus? True if it answers at all - even with an invalid
+  // reading. (Presence must not depend on one good reading, or a glitch at
+  // start-up would silently switch off every sonar-based safety check.)
+  bool present(int tries = 5);
   std::optional<int> distance_mm(int tries = 5);   // 1..5000 mm, or nullopt (never a made-up value)
   void set_color(int led, int r, int g, int b);    // led 0 or 1
 

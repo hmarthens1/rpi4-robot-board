@@ -35,6 +35,20 @@ std::optional<int> Sonar::distance_mm(int tries)
   return std::nullopt;
 }
 
+bool Sonar::present(int tries)
+{
+  for (int i = 0; i < tries; ++i) {
+    try {
+      auto guard = io_->transaction();
+      io_->write({0});
+      io_->read(2);
+      return true;
+    } catch (const std::system_error &) {
+    }
+  }
+  return false;
+}
+
 void Sonar::set_color(int led, int r, int g, int b)
 {
   if (led != 0 && led != 1) {throw std::invalid_argument("led must be 0 or 1");}

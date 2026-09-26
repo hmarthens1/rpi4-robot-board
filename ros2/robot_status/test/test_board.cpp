@@ -148,6 +148,15 @@ TEST(Sonar, GarbageIsRetriedNeverReportedAsFreeSpace) {
   EXPECT_FALSE(Sonar(std::make_unique<FakeBus>(r2)).distance_mm().has_value());
 }
 
+TEST(Sonar, PresentEvenWhenTheReadingIsGarbage) {
+  Record r;
+  r.reads = {65439};
+  EXPECT_TRUE(Sonar(std::make_unique<FakeBus>(r)).present());
+  Record r2;
+  r2.reads = std::deque<int>(10, -1);        // no answer at all
+  EXPECT_FALSE(Sonar(std::make_unique<FakeBus>(r2)).present());
+}
+
 TEST(Sonar, Color) {
   Record r;
   Sonar(std::make_unique<FakeBus>(r)).set_color(1, 10, 20, 30);

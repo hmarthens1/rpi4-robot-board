@@ -132,7 +132,7 @@ public:
 
     try {
       sonar_ = std::make_unique<robot_board::Sonar>();
-      if (!sonar_->distance_mm()) {sonar_.reset();}
+      if (!sonar_->present()) {sonar_.reset();}
     } catch (const std::exception &) {
       sonar_.reset();
     }

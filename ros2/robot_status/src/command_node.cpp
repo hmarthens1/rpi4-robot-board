@@ -20,7 +20,9 @@
 // Safety: max_speed / max_duration / drive / cmd_vel_timeout are fixed at
 // start-up (ros2 param set is refused), speeds are scaled to max_speed, each
 // motion stops by itself after at most max_duration, a new motion replaces the
-// running one, and the motors stop when the node exits.
+// running one, and the motors stop when the node exits. On a robot with the
+// ultrasonic sensor, a forward move is refused when an obstacle is closer than
+// min_clearance (or the distance is unknown), and stopped if it gets that close.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -56,6 +58,7 @@ public:
     max_duration_ = declare_parameter("max_duration", 5.0);
     drive_ = declare_parameter("drive", std::string("mecanum"));
     cmd_vel_timeout_ = declare_parameter("cmd_vel_timeout", 0.5);
+    min_clearance_ = declare_parameter("min_clearance", 0.3);   // metres, sonar robots only
     // Limits are fixed once running: no remote client (person, script or LLM
     // agent) may lift them. Change them in the service file and restart.
     param_cb_ = add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
@@ -64,7 +67,7 @@ public:
       for (const auto & p : ps) {
         const auto & n = p.get_name();
         if (started_ && (n == "max_speed" || n == "max_duration" || n == "drive" ||
-          n == "cmd_vel_timeout"))
+          n == "cmd_vel_timeout" || n == "min_clearance"))
         {
           r.successful = false;
           r.reason = n + " can only be set at startup";
@@ -80,7 +83,7 @@ public:
     }
     try {
       sonar_ = std::make_unique<robot_board::Sonar>();
-      if (!sonar_->distance_mm()) {sonar_.reset();}
+      if (!sonar_->present()) {sonar_.reset();}
     } catch (const std::exception &) {
       sonar_.reset();
     }
@@ -91,6 +94,9 @@ public:
     cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       "cmd_vel", 10, [this](geometry_msgs::msg::Twist::ConstSharedPtr m) {on_cmd_vel(*m);});
     watchdog_ = create_wall_timer(50ms, [this] {watchdog();});
+    if (sonar_) {
+      clearance_timer_ = create_wall_timer(100ms, [this] {check_clearance();});
+    }
 
     board_.stop();
     started_ = true;
@@ -177,6 +183,7 @@ private:
     std::lock_guard<std::mutex> lock(motion_mutex_);
     moving_ = false;
     cmd_vel_active_ = false;
+    forward_ = false;
     motion_desc_ = "stopped";
     board_.stop();
   }
@@ -199,6 +206,37 @@ private:
     }
   }
 
+  // Forward safety, enforced here whatever the sender (or an LLM) remembered to check.
+  void require_clearance()
+  {
+    if (!sonar_) {return;}
+    const auto mm = sonar_->distance_mm();
+    if (!mm) {throw std::runtime_error("refused: no valid sonar reading, path ahead unknown");}
+    if (*mm / 1000.0 < min_clearance_) {
+      char buf[96];
+      std::snprintf(buf, sizeof buf, "refused: obstacle %.2f m ahead (minimum %.2f m)",
+        *mm / 1000.0, min_clearance_);
+      throw std::runtime_error(buf);
+    }
+  }
+
+  void check_clearance()
+  {
+    bool forward;
+    {
+      std::lock_guard<std::mutex> lock(motion_mutex_);
+      forward = (moving_ || cmd_vel_active_) && forward_;
+    }
+    if (!forward) {return;}
+    const auto mm = sonar_->distance_mm();
+    if (mm && *mm / 1000.0 < min_clearance_) {
+      stop_motors();
+      char buf[96];
+      std::snprintf(buf, sizeof buf, "stopped: obstacle %.2f m ahead", *mm / 1000.0);
+      reply(nullptr, "stop", true, std::string(buf));
+    }
+  }
+
   // ----------------------------------------------------------------- actions
   json do_drive(const json & cmd)
   {
@@ -207,10 +245,16 @@ private:
     if (vx != 0.0 && drive_ != "mecanum") {
       throw std::invalid_argument("this robot can't slide sideways (drive is not mecanum)");
     }
+    if (vy > 0) {require_clearance();}
     const auto speeds = robot_board::wheel_speeds(vx * max_speed_, vy * max_speed_, turn * max_speed_);
     char desc[96];
     std::snprintf(desc, sizeof desc, "drive vx=%+.2f vy=%+.2f turn=%+.2f", vx, vy, turn);
-    return run_motion(speeds, duration(cmd), desc);
+    json result = run_motion(speeds, duration(cmd), desc);
+    {
+      std::lock_guard<std::mutex> lock(motion_mutex_);
+      forward_ = vy > 0;
+    }
+    return result;
   }
 
   json do_motor(const json & cmd)
@@ -292,7 +336,8 @@ private:
     return {{"battery_v", v ? json(*v) : json(nullptr)},
             {"distance_m", mm ? json(*mm / 1000.0) : json(nullptr)},
             {"motion", motion_desc_}, {"motor_speeds", motors}, {"servo_pulses", servos},
-            {"max_speed", max_speed_}, {"max_duration", max_duration_}, {"drive", drive_}};
+            {"max_speed", max_speed_}, {"max_duration", max_duration_}, {"drive", drive_},
+            {"min_clearance_m", sonar_ ? json(min_clearance_) : json(nullptr)}};
   }
 
   // ----------------------------------------------------------------- cmd_vel
@@ -303,6 +348,7 @@ private:
     const double vy = clip(msg.linear.x), turn = clip(msg.angular.z);
     std::lock_guard<std::mutex> lock(motion_mutex_);
     board_.set_motors(robot_board::wheel_speeds(vx * max_speed_, vy * max_speed_, turn * max_speed_));
+    forward_ = vy > 0;       // check_clearance() stops it if an obstacle gets close
     moving_ = false;
     cmd_vel_active_ = true;
     cmd_vel_last_ = Clock::now();
@@ -315,18 +361,18 @@ private:
   std::unique_ptr<robot_board::Sonar> sonar_;
   std::mutex motion_mutex_;
   std::atomic<bool> beeping_{false};
-  bool moving_ = false, cmd_vel_active_ = false;
+  bool moving_ = false, cmd_vel_active_ = false, forward_ = false;
   std::atomic<bool> started_{false};
   Clock::time_point motion_until_{}, cmd_vel_last_{};
   std::string motion_desc_ = "stopped";
   std::thread beep_thread_;
-  double max_speed_, max_duration_, cmd_vel_timeout_;
+  double max_speed_, max_duration_, cmd_vel_timeout_, min_clearance_;
   std::string drive_;
   OnSetParametersCallbackHandle::SharedPtr param_cb_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr result_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr command_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
-  rclcpp::TimerBase::SharedPtr watchdog_;
+  rclcpp::TimerBase::SharedPtr watchdog_, clearance_timer_;
 };
 
 int main(int argc, char ** argv)

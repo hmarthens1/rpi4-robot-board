@@ -98,8 +98,29 @@ three comes back garbled; `battery_mv` retries until the value is plausible.
 | `setPWMServoPulse(2, …)` raises `KeyError` (no offset for servo 2 in `Deviation.yaml`) | missing offsets default to 0 |
 | Motors keep running if a script crashes | `with Board()` stops them |
 
+## The robot's ROS 2 nodes (C++)
+
+`ros2/robot_status` is an `ament_cmake` package with the board driver in C++ (`include/robot_board`,
+`src/`) and two nodes, run as systemd services by `scripts/install_status_service.sh`:
+
+| Service | Node | Topics (in `/<hostname>`) |
+|---|---|---|
+| `robot-status` | `status_node` | `battery`, `system`, `sonar/range` |
+| `robot-command` | `command_node` (root, for the RGB LEDs) | `command` → `command_result`, `cmd_vel` |
+
+`command_node` takes JSON commands (`drive`, `motor`, `servo`, `led`, `rgb`, `buzzer`, `stop`,
+`status`) and enforces its own limits: speed cap, every motion stops by itself after at most
+`max_duration`, `stop` always wins, and the limits can't be changed with `ros2 param set`.
+
+The C++ driver speaks the same bytes as the Python one (same test cases) and shares its I2C lock
+file, so the nodes and the `robot-board` command-line tool can run at the same time.
+On a Pi 4 each node uses about 0.6 % of a core and 20 MB (the earlier Python nodes: 3–5 % and 55 MB).
+The RGB LED library, [rpi_ws281x](https://github.com/jgarff/rpi_ws281x), is fetched at build time
+at a pinned commit (it isn't packaged for Ubuntu).
+
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v     # anywhere, no Pi needed
+python3 -m unittest discover -s tests -v     # Python driver, anywhere, no Pi needed
+colcon test --packages-select robot_status   # C++ driver (gtest), in ~/ros2_ws on a robot
 ```

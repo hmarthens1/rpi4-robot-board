@@ -94,8 +94,12 @@ class CommandNode(Node):
         msg = String()
         msg.data = json.dumps({"id": cmd_id, "action": action, "ok": ok, "detail": detail})
         self.result_pub.publish(msg)
-        log = self.get_logger().info if ok else self.get_logger().warn
-        log(f"{action}: {detail}")
+        # Two separate call sites: rclpy refuses one call site that switches
+        # between severities ("Logger severity cannot be changed between calls").
+        if ok:
+            self.get_logger().info(f"{action}: {detail}")
+        else:
+            self.get_logger().warn(f"{action}: {detail}")
 
     def on_command(self, msg):
         cmd_id, action = None, "?"

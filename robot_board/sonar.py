@@ -36,16 +36,23 @@ class Sonar:
     def __init__(self, transport=None):
         self.io = transport or I2CTransport(addr=SONAR_ADDR)
 
-    def distance_mm(self, tries=3):
-        """Distance in mm (capped at 5000), or None if the module doesn't answer."""
+    def distance_mm(self, tries=5):
+        """Distance in mm (1..5000), or None - never a made-up value.
+
+        The module sometimes answers garbage like 0xFF9F. Capping that at 5000
+        would report "5 m of free space", so out-of-range values are retried
+        and, if nothing valid comes back, reported as no reading.
+        """
         for _ in range(tries):
             try:
                 with getattr(self.io, "transaction", contextlib.nullcontext)():
                     self.io.write([REG_DISTANCE])
                     raw = self.io.read(2)
-                return min(int.from_bytes(raw, "little"), MAX_MM)
             except OSError:
                 continue
+            mm = int.from_bytes(raw, "little")
+            if 1 <= mm <= MAX_MM:
+                return mm
         return None
 
     def distance_m(self):

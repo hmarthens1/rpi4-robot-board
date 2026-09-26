@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================================
-# Build the robot_status ROS 2 package and run its two nodes at boot
+# Build the robot_status ROS 2 package (C++) and run its two nodes at boot
 # =============================================================================
 # Needs: ROS 2 Humble (rpi4-ros2-multirobot Lab 02) and robot_board
 # (sudo bash scripts/install.sh).
 #
-#   1. links ros2/robot_status into ~/ros2_ws/src and builds it with colcon
+#   1. installs the C++ build dependencies (apt), links ros2/robot_status into
+#      ~/ros2_ws/src and builds it with colcon (Release), running its tests
 #   2. writes two systemd services, both in the namespace /<hostname> and with
 #      the ROS_DOMAIN_ID from your ~/.bashrc:
 #        robot-status   status_node  (battery, sonar, system)  as your user
@@ -44,16 +45,26 @@ if [ "${1:-}" = "--remove" ]; then
 fi
 
 [ -f /opt/ros/humble/setup.bash ] || die "ROS 2 Humble is not installed (rpi4-ros2-multirobot Lab 02)"
-python3 -c "import robot_board" 2>/dev/null || die "robot_board is not installed: sudo bash scripts/install.sh"
 DOMAIN=$(grep -E '^\s*export ROS_DOMAIN_ID=' "$REAL_HOME/.bashrc" | tail -n1 | cut -d= -f2)
 [ -n "$DOMAIN" ] || die "No ROS_DOMAIN_ID in $REAL_HOME/.bashrc (rpi4-ros2-multirobot Lab 02)"
 
-say "1/3  Build robot_status in $WS"
+say "1/3  Build robot_status (C++) in $WS"
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 10; done
+DEBIAN_FRONTEND=noninteractive apt-get install -y -q git build-essential cmake pkg-config \
+  libgpiod-dev nlohmann-json3-dev libi2c-dev ros-humble-ament-cmake-gtest >/dev/null \
+  || die "apt install of the build dependencies failed"
 sudo -u "$REAL_USER" mkdir -p "$WS/src"
 sudo -u "$REAL_USER" ln -sfn "$REPO/ros2/robot_status" "$WS/src/robot_status"
-sudo -u "$REAL_USER" bash -c "source /opt/ros/humble/setup.bash && cd '$WS' && colcon build --symlink-install --packages-select robot_status" \
-  > /tmp/robot_status_build.log 2>&1 || die "colcon build failed - see /tmp/robot_status_build.log"
-ok "built"
+# The package used to be Python (ament_python); colcon can't switch build type in place.
+if [ -f "$WS/build/robot_status/setup.py" ] || [ -d "$WS/build/robot_status/robot_status" ]; then
+  rm -rf "$WS/build/robot_status" "$WS/install/robot_status"
+fi
+sudo -u "$REAL_USER" bash -c "source /opt/ros/humble/setup.bash && cd '$WS' && \
+  colcon build --packages-select robot_status --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+  colcon test --packages-select robot_status --ctest-args -R test_board && \
+  colcon test-result --test-result-base build/robot_status" \
+  > /tmp/robot_status_build.log 2>&1 || die "colcon build or tests failed - see /tmp/robot_status_build.log"
+ok "built, $(grep -oE '[0-9]+ tests, [0-9]+ errors, [0-9]+ failures' /tmp/robot_status_build.log | tail -1)"
 
 say "2/3  systemd services"
 write_unit() {   # name, description, node, user

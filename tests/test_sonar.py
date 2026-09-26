@@ -11,12 +11,14 @@ class SonarTests(unittest.TestCase):
         self.assertEqual(Sonar(bus).distance_mm(), 1093)
         self.assertEqual(bus.writes, [[0]])
 
-    def test_distance_capped(self):
-        bus = FakeBus(reads=[(65535).to_bytes(2, "little")])
-        self.assertEqual(Sonar(bus).distance_mm(), 5000)
+    def test_garbage_is_retried_never_reported_as_free_space(self):
+        bus = FakeBus(reads=[(65439).to_bytes(2, "little")] * 2 + [(327).to_bytes(2, "little")])
+        self.assertEqual(Sonar(bus).distance_mm(), 327)
+        bus = FakeBus(reads=[(65439).to_bytes(2, "little")] * 10)
+        self.assertIsNone(Sonar(bus).distance_mm())
 
     def test_distance_retries_then_none(self):
-        bus = FakeBus(reads=[OSError(121, "Remote I/O error")] * 3)
+        bus = FakeBus(reads=[OSError(121, "Remote I/O error")] * 5)
         self.assertIsNone(Sonar(bus).distance_mm())
 
     def test_color(self):

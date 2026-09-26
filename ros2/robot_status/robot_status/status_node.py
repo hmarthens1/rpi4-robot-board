@@ -21,6 +21,7 @@ import socket
 import subprocess
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from rclpy.node import Node
 from sensor_msgs.msg import BatteryState, Range
@@ -171,7 +172,7 @@ def main():
     node = StatusNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):   # Ctrl+C or systemctl stop
         pass
     finally:
         node.destroy_node()

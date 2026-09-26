@@ -34,6 +34,7 @@ import threading
 import time
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -235,7 +236,7 @@ def main():
     node = CommandNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):   # Ctrl+C or systemctl stop
         pass
     finally:
         node.shutdown()

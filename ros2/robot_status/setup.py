@@ -14,5 +14,8 @@ setup(
     zip_safe=True,
     description="Publishes battery, ultrasonic range and system status of a fleet robot",
     license="TODO: License declaration",
-    entry_points={"console_scripts": ["status_node = robot_status.status_node:main"]},
+    entry_points={"console_scripts": [
+        "status_node = robot_status.status_node:main",
+        "command_node = robot_status.command_node:main",
+    ]},
 )

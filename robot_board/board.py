@@ -16,6 +16,9 @@ Register map (the same protocol as Hiwonder's HiwonderSDK/Board.py):
 
 Nothing here needs root: /dev/i2c-1 belongs to a group the default user is in.
 """
+import contextlib
+import fcntl
+import os
 import time
 
 try:
@@ -41,6 +44,28 @@ MOVE_TIME_MAX = 30000
 DEFAULT_MOTOR_POLARITY = {1: -1, 2: 1, 3: -1, 4: 1}
 
 
+# Several processes use the board at once (robot_status, robot_command, your
+# scripts). A register read is two transfers - set the register, then read -
+# so another process's write in between would change what gets read. Every
+# multi-transfer transaction therefore holds this lock file, across processes.
+LOCK_FILE = "/tmp/robot_board_i2c.lock"
+
+
+@contextlib.contextmanager
+def _i2c_lock():
+    old = os.umask(0)
+    try:
+        fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o666)   # root and users share it
+    finally:
+        os.umask(old)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 class I2CTransport:
     """Raw I2C writes and reads, one transfer each, with a retry like the SDK's."""
 
@@ -48,6 +73,24 @@ class I2CTransport:
         if SMBus is None:
             raise ImportError("smbus2 is not installed: sudo pip3 install smbus2")
         self.bus, self.addr, self.retries = bus, addr, retries
+        self._held = 0
+
+    @contextlib.contextmanager
+    def transaction(self):
+        """Hold the cross-process I2C lock: `with io.transaction(): io.write(...); io.read(...)`."""
+        if self._held:
+            self._held += 1
+            try:
+                yield
+            finally:
+                self._held -= 1
+            return
+        with _i2c_lock():
+            self._held = 1
+            try:
+                yield
+            finally:
+                self._held = 0
 
     def _rdwr(self, msg):
         for attempt in range(self.retries + 1):
@@ -61,12 +104,14 @@ class I2CTransport:
                 time.sleep(0.002)
 
     def write(self, data):
-        self._rdwr(i2c_msg.write(self.addr, list(data)))
+        with self.transaction():     # a lone write also waits for other processes' reads
+            self._rdwr(i2c_msg.write(self.addr, list(data)))
 
     def read(self, n):
-        msg = i2c_msg.read(self.addr, n)
-        self._rdwr(msg)
-        return bytes(list(msg))
+        with self.transaction():
+            msg = i2c_msg.read(self.addr, n)
+            self._rdwr(msg)
+            return bytes(list(msg))
 
 
 def _clamp(value, low, high):
@@ -97,13 +142,18 @@ class Board:
         self.motor_speeds = {m: 0 for m in MOTORS}
         self.servo_pulses = {s: None for s in SERVOS}
 
+    def _transaction(self):
+        # Test transports have no lock; real I2C does.
+        return getattr(self.io, "transaction", contextlib.nullcontext)()
+
     # ------------------------------------------------------------- battery
     def battery_mv(self, tries=6, low=3000, high=20000):
         """Battery voltage in mV, or None. Retries: some reads come back garbled."""
         for _ in range(tries):
             try:
-                self.io.write([REG_BATTERY])
-                raw = self.io.read(2)
+                with self._transaction():
+                    self.io.write([REG_BATTERY])
+                    raw = self.io.read(2)
             except OSError:
                 continue
             mv = int.from_bytes(raw, "little")

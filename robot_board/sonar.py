@@ -13,6 +13,8 @@ Register map (same protocol as Hiwonder's HiwonderSDK/Sonar.py):
 
 No root needed.
 """
+import contextlib
+
 from .board import I2CTransport
 
 SONAR_ADDR = 0x77
@@ -38,8 +40,10 @@ class Sonar:
         """Distance in mm (capped at 5000), or None if the module doesn't answer."""
         for _ in range(tries):
             try:
-                self.io.write([REG_DISTANCE])
-                return min(int.from_bytes(self.io.read(2), "little"), MAX_MM)
+                with getattr(self.io, "transaction", contextlib.nullcontext)():
+                    self.io.write([REG_DISTANCE])
+                    raw = self.io.read(2)
+                return min(int.from_bytes(raw, "little"), MAX_MM)
             except OSError:
                 continue
         return None

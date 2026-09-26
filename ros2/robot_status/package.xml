@@ -3,13 +3,15 @@
 <package format="3">
   <name>robot_status</name>
   <version>0.1.0</version>
-  <description>Publishes battery, ultrasonic range and system status of a fleet robot (read-only).</description>
+  <description>Fleet robot nodes: status_node publishes battery, sonar and system status; command_node executes motion, servo, LED and buzzer commands with safety limits.</description>
   <maintainer email="hmarthens@gmail.com">hmarthens1</maintainer>
   <license>TODO: License declaration</license>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
   <!-- robot_board (the Python package in this repo) is installed with pip: scripts/install.sh -->
 
   <export>

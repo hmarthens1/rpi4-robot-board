@@ -1,20 +1,23 @@
 #!/bin/bash
 # =============================================================================
-# Build the robot_status ROS 2 node and run it at boot as a systemd service
+# Build the robot_status ROS 2 package and run its two nodes at boot
 # =============================================================================
 # Needs: ROS 2 Humble (rpi4-ros2-multirobot Lab 02) and robot_board
 # (sudo bash scripts/install.sh).
 #
 #   1. links ros2/robot_status into ~/ros2_ws/src and builds it with colcon
-#   2. writes /etc/systemd/system/robot-status.service, which runs
-#        ros2 run robot_status status_node --ros-args -r __ns:=/<hostname>
-#      as your user, with the ROS_DOMAIN_ID from your ~/.bashrc
-#   3. starts it now and at every boot
+#   2. writes two systemd services, both in the namespace /<hostname> and with
+#      the ROS_DOMAIN_ID from your ~/.bashrc:
+#        robot-status   status_node  (battery, sonar, system)  as your user
+#        robot-command  command_node (motors, servos, LEDs...) as root: the
+#                       RGB LEDs need /dev/mem
+#   3. starts them now and at every boot
 #
 # USAGE (from the repo folder, on the Pi)
 #   sudo bash scripts/install_status_service.sh
 #   sudo bash scripts/install_status_service.sh --remove
-#   journalctl -u robot-status -f          # its log
+#   journalctl -u robot-status -f          # logs
+#   journalctl -u robot-command -f
 # =============================================================================
 
 set -u
@@ -22,7 +25,7 @@ say()  { echo -e "\n\033[1;36m==> $*\033[0m"; }
 ok()   { echo -e "    \033[1;32mOK\033[0m  $*"; }
 die()  { echo -e "\n\033[1;31mERROR:\033[0m $*\n" >&2; exit 1; }
 
-UNIT=/etc/systemd/system/robot-status.service
+UNITS="robot-status robot-command"
 [ "$(id -u)" -eq 0 ] || die "Must run with sudo:  sudo bash $0"
 REAL_USER=${SUDO_USER:-}
 [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] || die "Run it with sudo from your normal user, not as root."
@@ -31,9 +34,12 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 WS="$REAL_HOME/ros2_ws"
 
 if [ "${1:-}" = "--remove" ]; then
-  systemctl disable --now robot-status.service 2>/dev/null
-  rm -f "$UNIT"; systemctl daemon-reload
-  ok "robot-status service removed (the built package stays in $WS)"
+  for u in $UNITS; do
+    systemctl disable --now "$u.service" 2>/dev/null
+    rm -f "/etc/systemd/system/$u.service"
+  done
+  systemctl daemon-reload
+  ok "robot-status and robot-command services removed (the built package stays in $WS)"
   exit 0
 fi
 
@@ -49,34 +55,43 @@ sudo -u "$REAL_USER" bash -c "source /opt/ros/humble/setup.bash && cd '$WS' && c
   > /tmp/robot_status_build.log 2>&1 || die "colcon build failed - see /tmp/robot_status_build.log"
 ok "built"
 
-say "2/3  systemd service"
-cat > "$UNIT" <<EOF
+say "2/3  systemd services"
+write_unit() {   # name, description, node, user
+  cat > "/etc/systemd/system/$1.service" <<EOF
 [Unit]
-Description=ROS 2 robot_status node (battery, sonar, system status)
+Description=$2
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=$REAL_USER
+User=$4
 Environment=ROS_DOMAIN_ID=$DOMAIN
 Environment=ROS_LOCALHOST_ONLY=0
-ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source $WS/install/setup.bash && exec ros2 run robot_status status_node --ros-args -r __ns:=/\$(hostname)'
+ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source $WS/install/setup.bash && exec ros2 run robot_status $3 --ros-args -r __ns:=/\$(hostname)'
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+write_unit robot-status  "ROS 2 robot_status node (battery, sonar, system status)" status_node "$REAL_USER"
+write_unit robot-command "ROS 2 command node (motors, servos, LEDs, buzzer)"      command_node root
 systemctl daemon-reload
-systemctl enable robot-status.service >/dev/null 2>&1
-systemctl restart robot-status.service
-ok "$UNIT (ROS_DOMAIN_ID=$DOMAIN, namespace /$(hostname))"
+for u in $UNITS; do
+  systemctl enable "$u.service" >/dev/null 2>&1
+  systemctl restart "$u.service"
+done
+ok "robot-status, robot-command (ROS_DOMAIN_ID=$DOMAIN, namespace /$(hostname))"
 
 say "3/3  Check"
-sleep 6
-systemctl is-active --quiet robot-status.service && ok "running" || die "not running - journalctl -u robot-status -e"
-journalctl -u robot-status -n 5 --no-pager -o cat | sed 's/^/    /'
+sleep 8
+for u in $UNITS; do
+  systemctl is-active --quiet "$u.service" && ok "$u running" || die "$u not running - journalctl -u $u -e"
+  journalctl -u "$u" -n 3 --no-pager -o cat | grep -v "^Started" | sed 's/^/      /'
+done
 echo
-echo "Topics: /$(hostname)/battery, /$(hostname)/system, and /$(hostname)/sonar/range if a sonar is plugged in"
-echo "Log:    journalctl -u robot-status -f"
+echo "Status:   /$(hostname)/battery, /$(hostname)/system (+ /$(hostname)/sonar/range with a sonar)"
+echo "Commands: /$(hostname)/command in, /$(hostname)/command_result out, /$(hostname)/cmd_vel"
+echo "Logs:     journalctl -u robot-status -f ; journalctl -u robot-command -f"
 echo

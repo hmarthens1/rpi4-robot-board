@@ -25,7 +25,8 @@ Commands ("id" is optional and is echoed back in the result):
     {"action": "stop"}                                                 always accepted
     {"action": "status"}                                               battery, distance, what's running
 
-Safety: speeds are scaled to max_speed (percent), motions last at most
+Safety: the limits below can only be set at startup (ros2 param set is
+refused while running), speeds are scaled to max_speed (percent), motions last at most
 max_duration seconds and then stop by themselves, a new motion replaces the
 running one, and the motors stop when the node exits.
 """
@@ -34,6 +35,7 @@ import threading
 import time
 
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
@@ -55,6 +57,10 @@ class CommandNode(Node):
         self.declare_parameter("max_duration", 5.0)    # seconds per motion command
         self.declare_parameter("drive", "mecanum")     # "mecanum" or "differential"
         self.declare_parameter("cmd_vel_timeout", 0.5)
+        # The limits are fixed once the node runs: a remote "ros2 param set"
+        # (from a person, a script or an LLM agent) must not be able to lift them.
+        # Change them in the service file and restart instead.
+        self.add_on_set_parameters_callback(self._refuse_limit_changes)
 
         self.board = Board()
         self.lock = threading.Lock()
@@ -72,10 +78,20 @@ class CommandNode(Node):
         self.create_subscription(Twist, "cmd_vel", self.on_cmd_vel, 10)
         self.create_timer(0.05, self.watchdog)
         self.board.stop()
+        self._started = True
         self.get_logger().info(
             f"ready: max_speed {self.p('max_speed')} %, max_duration {self.p('max_duration')} s, "
             f"drive {self.p('drive')}, RGB {'yes' if self.rgb else 'no (not root)'}, "
             f"sonar {'yes' if self.sonar else 'no'}")
+
+    LOCKED = ("max_speed", "max_duration", "drive", "cmd_vel_timeout")
+
+    def _refuse_limit_changes(self, params):
+        locked = [p.name for p in params if p.name in self.LOCKED]
+        if locked and getattr(self, "_started", False):
+            return SetParametersResult(successful=False,
+                                       reason=f"{', '.join(locked)} can only be set at startup")
+        return SetParametersResult(successful=True)
 
     def p(self, name):
         return self.get_parameter(name).value

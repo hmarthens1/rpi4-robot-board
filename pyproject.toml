@@ -1,0 +1,5 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+# The metadata is in setup.cfg: Ubuntu 22.04 ships setuptools 59, which can't
+# read a [project] table here and would build a package called "UNKNOWN".

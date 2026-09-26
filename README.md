@@ -1,0 +1,105 @@
+# rpi4-robot-board
+
+Python driver for the **Hiwonder RaspberryPi-Adapter-4chMotorDrive V3.x** expansion board
+on the fleet's **Raspberry Pi 4** robots (`robot01`–`robot03`), running **Ubuntu Server 22.04**.
+Setup of the Pis themselves: [rpi4-ros2-multirobot](https://github.com/hmarthens1/rpi4-ros2-multirobot).
+
+It speaks the same I2C protocol as Hiwonder's `HiwonderSDK/Board.py` (the tests check it sends
+identical bytes), without that SDK's hardcoded paths, import-time side effects and broken functions.
+
+## Install (on each robot)
+
+```bash
+git clone https://github.com/hmarthens1/rpi4-robot-board.git ~/rpi4-robot-board
+cd ~/rpi4-robot-board
+sudo bash scripts/install.sh
+```
+
+Update later with `git pull && sudo bash scripts/install.sh`.
+
+## Check the board
+
+```bash
+robot-board battery                # e.g. 12.22 V - no sudo needed
+sudo robot-board test              # battery, RGB LEDs, buzzer, LED1/LED2 - nothing moves
+sudo robot-board test --motors     # each motor forward/back at 30 %: lift the robot first!
+robot-board keys                   # prints Key1/Key2 presses, Ctrl+C to stop
+robot-board sonar                  # ultrasonic distance in mm, Ctrl+C to stop
+```
+
+## Use it
+
+```python
+from robot_board import Board
+
+with Board() as board:             # stops all motors when the block ends, also on errors
+    print(board.battery_v())       # 12.22
+    board.set_motor(1, 40)         # percent, -100..100
+    board.set_motors(30, 30, 30, 30)
+    board.set_servo_pulse(1, 1500, ms=500)       # 500..2500 us, move over 500 ms
+    board.set_servo_angle(3, 45)                 # 0..180 deg
+    board.set_servo_pulses({1: 1000, 3: 2000}, ms=800)   # several at once
+```
+
+```python
+from robot_board.peripherals import RGB, Buzzer, Keys, Leds, cleanup
+
+RGB().fill(0, 0, 80)               # needs sudo (rpi_ws281x uses /dev/mem)
+Buzzer().beep(0.1, times=2)
+Keys().pressed(1)                  # True while Key1 is held
+Leds().set(1, True)                # LED1 on
+cleanup()
+```
+
+Ultrasonic module (Hiwonder I2C sonar at `0x77`, on port P7/P8/P9):
+
+```python
+from robot_board.sonar import Sonar
+sonar = Sonar()
+sonar.distance_mm()                # 1093 (capped at 5000), or None
+sonar.fill(0, 0, 60)               # its two RGB LEDs; sonar.breathe(0) for breathing
+```
+
+Mecanum wheels only:
+
+```python
+from robot_board.mecanum import Mecanum
+Mecanum(board).drive(vx=0, vy=40, turn=0)      # forward at 40 %
+```
+
+Per-robot trims: `Board(motor_polarity={3: 1}, servo_offsets={5: -64, 6: -47})`.
+
+## The board
+
+| Function | Interface | In this package |
+|---|---|---|
+| 4 DC motors | I2C `0x7A`, registers 31–34, int8 −100…100 | `Board.set_motor`, `set_motors`, `stop` |
+| 6 PWM servos | I2C `0x7A`, register 40: `[40, n, t_lo, t_hi, id, p_lo, p_hi, …]` | `Board.set_servo_pulse(s)`, `set_servo_angle` |
+| Battery | I2C `0x7A`, register 0: write `[0]`, then a **separate** 2-byte read (mV) | `Board.battery_mv`, `battery_v` |
+| 2× RGB (WS2812) | GPIO12, `rpi_ws281x`, needs root | `peripherals.RGB` |
+| Buzzer | GPIO6 | `peripherals.Buzzer` |
+| Key1, Key2 | GPIO13, GPIO23, to GND | `peripherals.Keys` |
+| LED1, LED2 | GPIO16, GPIO26, active low | `peripherals.Leds` |
+| Ultrasonic module (add-on) | I2C `0x77`: reg 0 distance (mm), regs 2–14 its LEDs | `sonar.Sonar` |
+| Serial bus servos, port P12 | header UART GPIO14/15 | not yet (the UART is Ubuntu's serial console) |
+
+**`i2cdetect` never shows the board**: `0x7A` is above `0x77`, the top of its scan. Read it with
+`i2ctransfer -a -y 1 w1@0x7a 0x00 && i2ctransfer -a -y 1 r2@0x7a`. About one battery read in
+three comes back garbled; `battery_mv` retries until the value is plausible.
+
+## Differences from HiwonderSDK/Board.py
+
+| HiwonderSDK | here |
+|---|---|
+| Must live in `~/mse112-ws-student/MasterPi` | pip package, import from anywhere |
+| Importing it starts the RGB driver, so everything needs `sudo` | only the RGB LEDs need `sudo` |
+| `setPWMServoAngle` fails with `NameError` | `set_servo_angle` works (through the pulse command) |
+| Bus-servo functions fail: their module isn't included | left out until bus servos are wired up |
+| `setPWMServoPulse(2, …)` raises `KeyError` (no offset for servo 2 in `Deviation.yaml`) | missing offsets default to 0 |
+| Motors keep running if a script crashes | `with Board()` stops them |
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v     # anywhere, no Pi needed
+```

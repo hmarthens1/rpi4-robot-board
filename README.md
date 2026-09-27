@@ -25,6 +25,7 @@ sudo robot-board test              # battery, RGB LEDs, buzzer, LED1/LED2 - noth
 sudo robot-board test --motors     # each motor forward/back at 30 %: lift the robot first!
 robot-board keys                   # prints Key1/Key2 presses, Ctrl+C to stop
 robot-board sonar                  # ultrasonic distance in mm, Ctrl+C to stop
+robot-board offsets                # arm calibration (servo deviation) saved on this robot
 ```
 
 ## Use it
@@ -120,6 +121,32 @@ file, so the nodes and the `robot-board` command-line tool can run at the same t
 On a Pi 4 each node uses about 0.6 % of a core and 20 MB (the earlier Python nodes: 3–5 % and 55 MB).
 The RGB LED library, [rpi_ws281x](https://github.com/jgarff/rpi_ws281x), is fetched at build time
 at a pinned commit (it isn't packaged for Ubuntu).
+
+### The arm
+
+On a robot with the 5-servo arm (1 gripper, 3 wrist, 4 elbow, 5 shoulder, 6 base; 2 is the fan),
+`command_node` also takes `arm_pose` (`stand` = every servo at 1500 us, `fold`, `rest`, `ready`),
+`arm_move` (gripper tip to x, y, z in cm with inverse kinematics ported from MasterPi's ArmIK and
+checked against it on 3564 cases), `gripper`, `arm_servos` (raw pulses), `arm_sequence`
+(frames, e.g. a MasterPi `.d6a` action group), and `arm_release` (stop driving servos: they go limp).
+
+**Calibration (servo deviation).** Each robot keeps its own offsets, in us added to every pulse
+(-150..150), in `/var/lib/robot_board/servo_offsets.json`; there is no default deviation.
+To read or change them:
+
+| Where | Read | Change |
+|---|---|---|
+| Dashboard, Arm tab | **Read from robot** (also done when you pick a robot) | spin boxes, **Apply** / **Save on robot** |
+| ROS 2 | `{"action": "get_servo_offsets"}` → `{"offsets", "saved", "file"}`; also in `status` | `{"action": "set_servo_offsets", "offsets": {"5": -20}, "save": true}` |
+| Shell on the robot | `robot-board offsets` | `sudo robot-board offsets --set 5=-20 6=10`, then `sudo systemctl restart robot-command` |
+
+```bash
+ros2 topic pub --once /robot01/command std_msgs/String '{data: "{\"action\": \"get_servo_offsets\"}"}'
+ros2 topic echo --once /robot01/command_result
+```
+
+To calibrate: **Stand** (all 1500), then nudge each joint's offset until the arm is straight up
+and the gripper centred, and save.
 
 ## Tests
 

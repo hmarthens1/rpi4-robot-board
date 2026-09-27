@@ -28,6 +28,8 @@
 //   {"action": "set_servo_offsets", "offsets": {"5": -20}, "save": true}
 //       calibration in us (-150..150), saved to /var/lib/robot_board/servo_offsets.json
 //       and loaded at every start
+//   {"action": "get_servo_offsets"}
+//       reply detail {"offsets": in use, "saved": what the file holds (or null), "file": path}
 //
 // Safety: max_speed / max_duration / drive / cmd_vel_timeout are fixed at
 // start-up (ros2 param set is refused), speeds are scaled to max_speed, each
@@ -187,6 +189,7 @@ private:
     if (action == "arm_sequence") {return do_arm_sequence(cmd);}
     if (action == "arm_release") {return do_arm_release(cmd);}
     if (action == "set_servo_offsets") {return do_set_offsets(cmd);}
+    if (action == "get_servo_offsets") {return do_get_offsets();}
     if (action == "status") {return do_status();}
     throw std::invalid_argument("unknown action '" + action + "'");
   }
@@ -543,6 +546,24 @@ private:
            " - they apply from the next move";
   }
 
+  json offsets_json() const
+  {
+    json all = json::object();
+    for (const auto & [s, o] : board_.servo_offsets()) {all[std::to_string(s)] = o;}
+    return all;
+  }
+
+  json do_get_offsets()
+  {
+    json saved = nullptr;
+    std::ifstream f(kOffsetsFile);
+    if (f) {
+      try {saved = json::parse(f);} catch (const std::exception &) {saved = "unreadable";}
+    }
+    std::lock_guard<std::recursive_mutex> lock(motion_mutex_);
+    return {{"offsets", offsets_json()}, {"saved", saved}, {"file", kOffsetsFile}};
+  }
+
   json do_arm_release(const json & cmd)
   {
     require_arm_idle();
@@ -626,7 +647,8 @@ private:
             {"motion", motion_desc_}, {"motor_speeds", motors}, {"servo_pulses", servos},
             {"max_speed", max_speed_}, {"max_duration", max_duration_}, {"drive", drive_},
             {"min_clearance_m", sonar_ ? json(min_clearance_) : json(nullptr)},
-            {"arm_raw_pulses", arm_json()}, {"arm_sequence_running", arm_playing_.load()}};
+            {"arm_raw_pulses", arm_json()}, {"arm_sequence_running", arm_playing_.load()},
+            {"servo_offsets", offsets_json()}};
   }
 
   // ----------------------------------------------------------------- cmd_vel

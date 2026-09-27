@@ -6,6 +6,8 @@ robot-board: check the expansion board from the command line.
     sudo robot-board test --motors   # also turns each motor: wheels off the table!
     robot-board keys                 # prints key presses until Ctrl+C
     robot-board sonar                # ultrasonic distance, 5 times a second, until Ctrl+C
+    robot-board offsets              # the arm calibration saved on this robot (servo deviation)
+    sudo robot-board offsets --set 5=-20 6=10   # change it by hand (restart robot-command after)
 """
 import argparse
 import os
@@ -13,6 +15,8 @@ import sys
 import time
 
 from .board import Board
+
+OFFSETS_FILE = "/var/lib/robot_board/servo_offsets.json"
 
 MOTOR_SPEED = 30     # percent
 MOTOR_TIME = 1.0     # seconds each way
@@ -122,6 +126,35 @@ def cmd_sonar(_args):
     return 0
 
 
+def cmd_offsets(args):
+    import json
+
+    try:
+        with open(OFFSETS_FILE) as f:
+            offsets = json.load(f)
+    except FileNotFoundError:
+        offsets = {}
+    if args.set:
+        for item in args.set:
+            servo, _, value = item.partition("=")
+            if servo not in ("1", "2", "3", "4", "5", "6") or not value.lstrip("-").isdigit():
+                print(f"bad '{item}': use SERVO=US, e.g. 5=-20")
+                return 1
+            if not -150 <= int(value) <= 150:
+                print(f"bad '{item}': offsets are limited to -150..150 us")
+                return 1
+            offsets[servo] = int(value)
+        os.makedirs(os.path.dirname(OFFSETS_FILE), exist_ok=True)
+        with open(OFFSETS_FILE, "w") as f:
+            f.write(json.dumps(offsets) + "\n")
+        print("saved - run 'sudo systemctl restart robot-command' to use it")
+    if not offsets:
+        print(f"no calibration saved ({OFFSETS_FILE}): every offset is 0")
+    for servo in sorted(offsets, key=int):
+        print(f"servo {servo}: {offsets[servo]:+d} us")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="robot-board", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -130,8 +163,11 @@ def main(argv=None):
     t.add_argument("--motors", action="store_true", help="also turn each motor (lift the robot first)")
     sub.add_parser("keys", help="print Key1/Key2 presses")
     sub.add_parser("sonar", help="print the ultrasonic distance")
+    o = sub.add_parser("offsets", help="print (or --set) the saved arm servo offsets")
+    o.add_argument("--set", nargs="+", metavar="SERVO=US", help="e.g. 5=-20 6=10 (needs sudo)")
     args = parser.parse_args(argv)
-    commands = {"battery": cmd_battery, "test": cmd_test, "keys": cmd_keys, "sonar": cmd_sonar}
+    commands = {"battery": cmd_battery, "test": cmd_test, "keys": cmd_keys, "sonar": cmd_sonar,
+                "offsets": cmd_offsets}
     return commands[args.cmd](args)
 
 

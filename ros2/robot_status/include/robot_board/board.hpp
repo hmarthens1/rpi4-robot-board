@@ -44,6 +44,9 @@ public:
   void set_servo_pulse(int servo, int pulse, int ms = 1000);
   void set_servo_angle(int servo, double angle, int ms = 1000);   // 0..180 deg
   void set_servo_offsets(std::map<int, int> offsets) {offsets_ = std::move(offsets);}
+  // HiwonderSDK unloadPWMServo: write 0 to the servo's angle register (21 + id - 1),
+  // meant to stop driving the servo so it goes limp.
+  void unload_servo(int servo);
   const std::map<int, int> & servo_offsets() const {return offsets_;}
   const std::array<std::optional<int>, 6> & servo_pulses() const {return pulses_;}
 

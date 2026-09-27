@@ -18,12 +18,16 @@
 //   {"action": "status"}
 //
 // Arm (PWM servos 1 gripper, 3 wrist, 4 elbow, 5 shoulder, 6 base; see arm.hpp):
-//   {"action": "arm_pose", "pose": "stand|rest|ready|center|camera", "ms": 1500}
+//   {"action": "arm_pose", "pose": "stand|fold|rest|ready", "ms": 1500}   stand = all 1500
 //   {"action": "arm_move", "x": 0, "y": 15, "z": 10, "pitch": -30, "ms": 800}   cm, deg; IK
 //   {"action": "gripper", "open": true}            or "pulse": 500..2500
 //   {"action": "arm_servos", "pulses": {"1": 1500, "3": 900}, "ms": 500}          raw pulses
 //   {"action": "arm_sequence", "frames": [{"ms": 500, "pulses": {"1": 1500, ...}}, ...]}
 //       played on its own thread, one frame after the other; stop interrupts it
+//   {"action": "arm_release", "servos": [1]}       stop driving these servos (go limp)
+//   {"action": "set_servo_offsets", "offsets": {"5": -20}, "save": true}
+//       calibration in us (-150..150), saved to /var/lib/robot_board/servo_offsets.json
+//       and loaded at every start
 //
 // Safety: max_speed / max_duration / drive / cmd_vel_timeout are fixed at
 // start-up (ros2 param set is refused), speeds are scaled to max_speed, each
@@ -33,6 +37,8 @@
 // min_clearance (or the distance is unknown), and stopped if it gets that close.
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -72,11 +78,12 @@ public:
     cmd_vel_timeout_ = declare_parameter("cmd_vel_timeout", 0.5);
     min_clearance_ = declare_parameter("min_clearance", 0.3);   // metres, sonar robots only
     arm_min_ms_ = declare_parameter("arm_min_ms", 300);         // no arm move faster than this
-    // Per-servo calibration (us added to every pulse), servos 1..6. The defaults
-    // are MasterPi's Deviation.yaml (5: -64, 6: -47); calibrate each arm.
-    const auto offs = declare_parameter("servo_offsets", std::vector<int64_t>{0, 0, 0, 0, -64, -47});
+    // Per-servo calibration (us added to every pulse), servos 1..6: the parameter,
+    // overridden by what this robot saved with set_servo_offsets.
+    const auto offs = declare_parameter("servo_offsets", std::vector<int64_t>{0, 0, 0, 0, 0, 0});
     std::map<int, int> offsets;
     for (size_t i = 0; i < offs.size() && i < 6; ++i) {offsets[static_cast<int>(i) + 1] = static_cast<int>(offs[i]);}
+    load_saved_offsets(offsets);
     board_.set_servo_offsets(offsets);
     // Limits are fixed once running: no remote client (person, script or LLM
     // agent) may lift them. Change them in the service file and restart.
@@ -178,6 +185,8 @@ private:
     if (action == "gripper") {return do_gripper(cmd);}
     if (action == "arm_servos") {return do_arm_servos(cmd);}
     if (action == "arm_sequence") {return do_arm_sequence(cmd);}
+    if (action == "arm_release") {return do_arm_release(cmd);}
+    if (action == "set_servo_offsets") {return do_set_offsets(cmd);}
     if (action == "status") {return do_status();}
     throw std::invalid_argument("unknown action '" + action + "'");
   }
@@ -392,20 +401,13 @@ private:
   {
     require_arm_idle();
     const std::string name = cmd.value("pose", "stand");
-    std::map<int, int> target;
-    if (name == "camera") {   // the camera-view pose used by the MasterPi functions
-      auto sol = ik_.solve(0, 6, 18, 0, -90, 90);
-      if (!sol) {throw std::runtime_error("camera pose unreachable");}
-      target = {{3, sol->servo3}, {4, sol->servo4}, {5, sol->servo5}, {6, sol->servo6}};
-    } else {
-      const auto & poses = robot_board::arm_poses();
-      auto it = poses.find(name);
-      if (it == poses.end()) {
-        throw std::invalid_argument("unknown pose '" + name + "' (stand, rest, ready, center, camera)");
-      }
-      const auto & q = it->second;
-      target = {{1, q.s1}, {3, q.s3}, {4, q.s4}, {5, q.s5}, {6, q.s6}};
+    const auto & poses = robot_board::arm_poses();
+    auto it = poses.find(name);
+    if (it == poses.end()) {
+      throw std::invalid_argument("unknown pose '" + name + "' (stand, fold, rest, ready)");
     }
+    const auto & q = it->second;
+    const std::map<int, int> target = {{1, q.s1}, {3, q.s3}, {4, q.s4}, {5, q.s5}, {6, q.s6}};
     const int ms = arm_ms(cmd, target);
     arm_write(target, ms);
     return "arm to '" + name + "': " + describe(target, ms);
@@ -501,6 +503,59 @@ private:
         " after " + std::to_string(done) + "/" + std::to_string(frames.size()) + " frames");
     });
     return "playing '" + name + "': " + std::to_string(frames.size()) + " frames";
+  }
+
+  static constexpr const char * kOffsetsFile = "/var/lib/robot_board/servo_offsets.json";
+
+  void load_saved_offsets(std::map<int, int> & offsets)
+  {
+    std::ifstream f(kOffsetsFile);
+    if (!f) {return;}
+    try {
+      const json saved = json::parse(f);
+      for (const auto & [k, v] : saved.items()) {offsets[std::stoi(k)] = v.get<int>();}
+      RCLCPP_INFO(get_logger(), "servo offsets from %s: %s", kOffsetsFile, saved.dump().c_str());
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(get_logger(), "ignoring %s: %s", kOffsetsFile, e.what());
+    }
+  }
+
+  json do_set_offsets(const json & cmd)
+  {
+    auto offsets = board_.servo_offsets();
+    for (const auto & [k, v] : cmd.at("offsets").items()) {
+      const int servo = std::stoi(k), off = v.get<int>();
+      if (servo < 1 || servo > 6) {throw std::invalid_argument("servo must be 1-6");}
+      if (off < -150 || off > 150) {throw std::invalid_argument("offsets are limited to -150..150 us");}
+      offsets[servo] = off;
+    }
+    {
+      std::lock_guard<std::recursive_mutex> lock(motion_mutex_);
+      board_.set_servo_offsets(offsets);
+    }
+    json all;
+    for (const auto & [s, o] : offsets) {all[std::to_string(s)] = o;}
+    if (cmd.value("save", false)) {
+      std::filesystem::create_directories(std::filesystem::path(kOffsetsFile).parent_path());
+      std::ofstream(kOffsetsFile) << all.dump() << "\n";
+    }
+    return "servo offsets " + all.dump() + (cmd.value("save", false) ? " (saved)" : " (not saved)") +
+           " - they apply from the next move";
+  }
+
+  json do_arm_release(const json & cmd)
+  {
+    require_arm_idle();
+    std::vector<int> servos = cmd.value("servos", std::vector<int>{1, 3, 4, 5, 6});
+    std::string list;
+    std::lock_guard<std::recursive_mutex> lock(motion_mutex_);
+    for (int s : servos) {
+      if (s < 1 || s > 6 || s == 2) {throw std::invalid_argument("arm servos are 1, 3, 4, 5, 6");}
+      board_.unload_servo(s);
+      arm_raw_[s - 1] = 0;
+      list += " " + std::to_string(s);
+    }
+    return "released servos" + list + " (unload register written)";
   }
 
   void stop_sequence()

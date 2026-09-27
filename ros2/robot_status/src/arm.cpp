@@ -87,10 +87,10 @@ const std::map<std::string, ArmPose> & arm_poses()
 {
   // gripper, wrist, elbow, shoulder, base
   static const std::map<std::string, ArmPose> poses = {
-    {"stand", {1500, 695, 2415, 780, 1500}},    // stand.d6a
+    {"stand", {1500, 1500, 1500, 1500, 1500}},  // all servos centred (MasterPi_PC_Software "Reset")
+    {"fold", {1500, 695, 2415, 780, 1500}},     // stand.d6a
     {"rest", {1500, 590, 2500, 700, 1500}},     // start/end frame of the lab action groups
     {"ready", {2500, 800, 2000, 2100, 1500}},   // initMove in Project 2 / demo_pickNplace
-    {"center", {1500, 1500, 1500, 1500, 1500}}, // MasterPi_PC_Software "Reset"
   };
   return poses;
 }

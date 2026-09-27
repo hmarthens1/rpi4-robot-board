@@ -106,6 +106,15 @@ void Board::set_servo_pulse(int servo, int pulse, int ms)
   set_servo_pulses({{servo, pulse}}, ms);
 }
 
+void Board::unload_servo(int servo)
+{
+  if (servo < 1 || servo > 6) {
+    throw std::invalid_argument("servo must be 1-6, not " + std::to_string(servo));
+  }
+  io_->write({static_cast<uint8_t>(21 + servo - 1), 0});
+  pulses_[servo - 1].reset();
+}
+
 void Board::set_servo_angle(int servo, double angle, int ms)
 {
   angle = clamp(angle, 0.0, 180.0);

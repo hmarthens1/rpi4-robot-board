@@ -54,6 +54,10 @@ TEST(ArmIK, UnreachableIsNotAGuess) {
 TEST(ArmPoses, KnownPoses) {
   const auto & p = robot_board::arm_poses();
   ASSERT_TRUE(p.count("stand"));
-  EXPECT_EQ(p.at("stand").s3, 695);
-  EXPECT_EQ(p.at("stand").s4, 2415);
+  EXPECT_EQ(p.at("stand").s3, 1500);
+  EXPECT_EQ(p.at("fold").s3, 695);
+  EXPECT_EQ(p.at("fold").s4, 2415);
+  // The lab's "camera view" target (0, 6, 18) at pitch 0 is unreachable in the
+  // original Python ArmIK as well; it silently does nothing there.
+  EXPECT_FALSE(robot_board::ArmIK().solve(0, 6, 18, 0, -90, 90).has_value());
 }

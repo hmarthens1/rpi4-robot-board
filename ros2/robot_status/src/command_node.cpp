@@ -14,6 +14,9 @@
 //   {"action": "led", "led": 1, "on": true}
 //   {"action": "rgb", "r": 0, "g": 0, "b": 80}                  needs root (service runs as root)
 //   {"action": "buzzer", "seconds": 0.2, "times": 2}
+//   {"action": "nudge", "direction": "forward", "seconds": 0.3, "speed": 1.0}
+//       close-range positioning for grasping: <= 0.5 s, within max_speed, and
+//       NOT limited by min_clearance (the operator/planner must be watching)
 //   {"action": "stop"}                                            always accepted (also stops an arm sequence)
 //   {"action": "status"}
 //
@@ -171,6 +174,7 @@ private:
   json dispatch(const std::string & action, const json & cmd)
   {
     if (action == "drive") {return do_drive(cmd);}
+    if (action == "nudge") {return do_nudge(cmd);}
     if (action == "motor") {return do_motor(cmd);}
     if (action == "servo") {return do_servo(cmd);}
     if (action == "led") {return do_led(cmd);}
@@ -319,6 +323,36 @@ private:
     {
       std::lock_guard<std::recursive_mutex> lock(motion_mutex_);
       forward_ = vy > 0;
+    }
+    return result;
+  }
+
+  // Close-range positioning for manipulation (e.g. bringing an object into the
+  // arm's reach): short pushes that are allowed forward even inside
+  // min_clearance or without a sonar reading. Bounded instead: at most
+  // kNudgeMax seconds per command, within max_speed, and `stop` ends it.
+  static constexpr double kNudgeMax = 0.5;
+
+  json do_nudge(const json & cmd)
+  {
+    const std::string dir = cmd.value("direction", "forward");
+    const double speed = clip(cmd.value("speed", 1.0));
+    double vx = 0, vy = 0;
+    if (dir == "forward") {vy = std::abs(speed);}
+    else if (dir == "backward") {vy = -std::abs(speed);}
+    else if (dir == "left" || dir == "right") {
+      if (drive_ != "mecanum") {throw std::invalid_argument("this robot can't slide sideways");}
+      vx = dir == "right" ? std::abs(speed) : -std::abs(speed);
+    } else {
+      throw std::invalid_argument("direction is forward, backward, left or right");
+    }
+    const double seconds = std::clamp(cmd.value("seconds", 0.3), 0.05, kNudgeMax);
+    const auto speeds = robot_board::wheel_speeds(vx * max_speed_, vy * max_speed_, 0);
+    RCLCPP_WARN(get_logger(), "nudge %s: obstacle check not applied (manipulation)", dir.c_str());
+    json result = run_motion(speeds, seconds, "nudge " + dir);
+    {
+      std::lock_guard<std::recursive_mutex> lock(motion_mutex_);
+      forward_ = false;   // check_clearance() must not stop it: getting close is the point
     }
     return result;
   }

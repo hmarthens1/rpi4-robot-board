@@ -81,12 +81,7 @@ public:
     } catch (const std::exception & e) {
       RCLCPP_WARN(get_logger(), "RGB LEDs unavailable (%s) - run as root", e.what());
     }
-    try {
-      sonar_ = std::make_unique<robot_board::Sonar>();
-      if (!sonar_->present()) {sonar_.reset();}
-    } catch (const std::exception &) {
-      sonar_.reset();
-    }
+    probe_sonar();
 
     result_pub_ = create_publisher<std_msgs::msg::String>("command_result", 10);
     command_sub_ = create_subscription<std_msgs::msg::String>(
@@ -94,9 +89,9 @@ public:
     cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       "cmd_vel", 10, [this](geometry_msgs::msg::Twist::ConstSharedPtr m) {on_cmd_vel(*m);});
     watchdog_ = create_wall_timer(50ms, [this] {watchdog();});
-    if (sonar_) {
-      clearance_timer_ = create_wall_timer(100ms, [this] {check_clearance();});
-    }
+    clearance_timer_ = create_wall_timer(100ms, [this] {check_clearance();});
+    // The sonar may be plugged in (or out) while the robot runs.
+    sonar_probe_ = create_wall_timer(5s, [this] {probe_sonar();});
 
     board_.stop();
     started_ = true;
@@ -206,12 +201,40 @@ private:
     }
   }
 
+  void probe_sonar()
+  {
+    if (sonar_) {return;}
+    try {
+      auto s = std::make_unique<robot_board::Sonar>();
+      if (!s->present()) {return;}
+      sonar_ = std::move(s);
+    } catch (const std::exception &) {
+      return;
+    }
+    if (started_) {
+      RCLCPP_INFO(get_logger(), "ultrasonic module connected - forward obstacle check on");
+    }
+  }
+
+  // A failed reading: glitch or unplugged? Only a module that no longer answers
+  // at all is dropped (and then looked for again every 5 s).
+  void check_unplugged()
+  {
+    if (sonar_ && !sonar_->present()) {
+      sonar_.reset();
+      RCLCPP_WARN(get_logger(), "ultrasonic module disconnected - forward obstacle check off");
+    }
+  }
+
   // Forward safety, enforced here whatever the sender (or an LLM) remembered to check.
   void require_clearance()
   {
     if (!sonar_) {return;}
     const auto mm = sonar_->distance_mm();
-    if (!mm) {throw std::runtime_error("refused: no valid sonar reading, path ahead unknown");}
+    if (!mm) {
+      check_unplugged();
+      throw std::runtime_error("refused: no valid sonar reading, path ahead unknown");
+    }
     if (*mm / 1000.0 < min_clearance_) {
       char buf[96];
       std::snprintf(buf, sizeof buf, "refused: obstacle %.2f m ahead (minimum %.2f m)",
@@ -227,8 +250,9 @@ private:
       std::lock_guard<std::mutex> lock(motion_mutex_);
       forward = (moving_ || cmd_vel_active_) && forward_;
     }
-    if (!forward) {return;}
+    if (!forward || !sonar_) {return;}
     const auto mm = sonar_->distance_mm();
+    if (!mm) {check_unplugged(); return;}
     if (mm && *mm / 1000.0 < min_clearance_) {
       stop_motors();
       char buf[96];
@@ -372,7 +396,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr result_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr command_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
-  rclcpp::TimerBase::SharedPtr watchdog_, clearance_timer_;
+  rclcpp::TimerBase::SharedPtr watchdog_, clearance_timer_, sonar_probe_;
 };
 
 int main(int argc, char ** argv)

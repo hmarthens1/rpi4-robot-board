@@ -130,19 +130,14 @@ public:
     timers_.push_back(create_wall_timer(period(battery_rate_), [this] {publish_battery();}));
     timers_.push_back(create_wall_timer(period(system_rate_), [this] {publish_system();}));
 
-    try {
-      sonar_ = std::make_unique<robot_board::Sonar>();
-      if (!sonar_->present()) {sonar_.reset();}
-    } catch (const std::exception &) {
-      sonar_.reset();
+    // The ultrasonic module can be plugged in or out while the robot runs:
+    // look for it now and every 5 s while it is missing.
+    probe_sonar();
+    if (!sonar_) {
+      RCLCPP_INFO(get_logger(), "no ultrasonic module yet - checking every 5 s");
     }
-    if (sonar_) {
-      range_pub_ = create_publisher<sensor_msgs::msg::Range>("sonar/range", 10);
-      timers_.push_back(create_wall_timer(period(sonar_rate_), [this] {publish_range();}));
-      RCLCPP_INFO(get_logger(), "ultrasonic module found at I2C 0x77");
-    } else {
-      RCLCPP_INFO(get_logger(), "no ultrasonic module - not publishing sonar/range");
-    }
+    timers_.push_back(create_wall_timer(5s, [this] {probe_sonar();}));
+    timers_.push_back(create_wall_timer(period(sonar_rate_), [this] {publish_range();}));
   }
 
 private:
@@ -166,10 +161,33 @@ private:
     battery_pub_->publish(msg);
   }
 
+  void probe_sonar()
+  {
+    if (sonar_) {return;}
+    try {
+      auto s = std::make_unique<robot_board::Sonar>();
+      if (!s->present()) {return;}
+      sonar_ = std::move(s);
+    } catch (const std::exception &) {
+      return;
+    }
+    if (!range_pub_) {
+      range_pub_ = create_publisher<sensor_msgs::msg::Range>("sonar/range", 10);
+    }
+    RCLCPP_INFO(get_logger(), "ultrasonic module found at I2C 0x77 - publishing sonar/range");
+  }
+
   void publish_range()
   {
+    if (!sonar_) {return;}
     auto mm = sonar_->distance_mm();
-    if (!mm) {return;}
+    if (!mm) {
+      if (!sonar_->present()) {          // unplugged, not just a bad reading
+        sonar_.reset();
+        RCLCPP_WARN(get_logger(), "ultrasonic module disconnected");
+      }
+      return;
+    }
     sensor_msgs::msg::Range msg;
     msg.header.stamp = now();
     msg.header.frame_id = "sonar_link";

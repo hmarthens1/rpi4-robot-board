@@ -8,7 +8,7 @@ a process boundary.
 Install on a robot (from the repo folder):
 
 ```bash
-sudo bash scripts/install_vision.sh       # OpenCV (apt), ncnn (source, ~1 h once), models, service
+sudo bash scripts/install_vision.sh       # OpenCV (apt), ncnn (source, ~12 min once), models, service
 journalctl -u robot-vision -f
 ```
 
@@ -69,7 +69,9 @@ Tune the colour with `"image": "mask"`: white is what matches.
 
 COCO's 80 classes. Detection runs on its own thread with 3 ncnn threads (leaving a core for
 the camera, lane tracking and ROS), as fast as it can; it is off by default because it keeps
-three cores busy. Measure on your Pi:
+three cores busy. Measured on robot01 (Pi 4, 4 GB): lane tracking 2.8 ms/frame; YOLOX nano 124 ms (8.1 frames/s)
+and tiny 274 ms (3.7 frames/s) with 3 threads, about 150 ms for nano while the node also tracks
+the lane. Measure on your Pi:
 
 ```bash
 ~/ros2_ws/install/robot_vision/lib/robot_vision/vision_bench

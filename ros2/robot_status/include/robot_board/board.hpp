@@ -43,6 +43,8 @@ public:
   void set_servo_pulses(const std::map<int, int> & pulses, int ms = 1000);
   void set_servo_pulse(int servo, int pulse, int ms = 1000);
   void set_servo_angle(int servo, double angle, int ms = 1000);   // 0..180 deg
+  void set_servo_offsets(std::map<int, int> offsets) {offsets_ = std::move(offsets);}
+  const std::map<int, int> & servo_offsets() const {return offsets_;}
   const std::array<std::optional<int>, 6> & servo_pulses() const {return pulses_;}
 
 private:

@@ -43,7 +43,7 @@ set_target_properties(ws2811 PROPERTIES POSITION_INDEPENDENT_CODE ON C_STANDARD 
 target_link_libraries(ws2811 m)
 
 # ---- the board driver (I2C: motors, servos, battery, sonar) - no ROS in here
-add_library(robot_board STATIC src/i2c.cpp src/board.cpp src/sonar.cpp)
+add_library(robot_board STATIC src/i2c.cpp src/board.cpp src/sonar.cpp src/arm.cpp)
 target_include_directories(robot_board PUBLIC include)
 set_target_properties(robot_board PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -66,6 +66,10 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_board test/test_board.cpp)
   target_link_libraries(test_board robot_board)
+  ament_add_gtest(test_arm test/test_arm.cpp)
+  target_link_libraries(test_arm robot_board)
+  target_compile_definitions(test_arm PRIVATE
+    ARM_IK_REFERENCE="${CMAKE_CURRENT_SOURCE_DIR}/test/data/arm_ik_reference.txt")
 endif()
 
 ament_package()

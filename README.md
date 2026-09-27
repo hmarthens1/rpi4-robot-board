@@ -111,6 +111,9 @@ three comes back garbled; `battery_mv` retries until the value is plausible.
 `command_node` takes JSON commands (`drive`, `motor`, `servo`, `led`, `rgb`, `buzzer`, `stop`,
 `status`) and enforces its own limits: speed cap, every motion stops by itself after at most
 `max_duration`, `stop` always wins, and the limits can't be changed with `ros2 param set`.
+With the ultrasonic module plugged in, a forward move is refused when an obstacle is closer than
+`min_clearance` (0.3 m) or the distance is unknown, and stopped if it gets that close. Both nodes
+look for the module every 5 s, so it can be plugged in or out while the robot runs.
 
 The C++ driver speaks the same bytes as the Python one (same test cases) and shares its I2C lock
 file, so the nodes and the `robot-board` command-line tool can run at the same time.

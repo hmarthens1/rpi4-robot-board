@@ -20,7 +20,7 @@ Update later with `git pull && sudo bash scripts/install.sh`.
 ## Check the board
 
 ```bash
-robot-board battery                # e.g. 12.22 V - no sudo needed
+robot-board battery                # e.g. 8.17 V (2x 18650) - no sudo needed
 sudo robot-board test              # battery, RGB LEDs, buzzer, LED1/LED2 - nothing moves
 sudo robot-board test --motors     # each motor forward/back at 30 %: lift the robot first!
 robot-board keys                   # prints Key1/Key2 presses, Ctrl+C to stop
@@ -33,7 +33,7 @@ robot-board sonar                  # ultrasonic distance in mm, Ctrl+C to stop
 from robot_board import Board
 
 with Board() as board:             # stops all motors when the block ends, also on errors
-    print(board.battery_v())       # 12.22
+    print(board.battery_v())       # 8.17
     board.set_motor(1, 40)         # percent, -100..100
     board.set_motors(30, 30, 30, 30)
     board.set_servo_pulse(1, 1500, ms=500)       # 500..2500 us, move over 500 ms

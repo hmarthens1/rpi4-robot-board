@@ -118,7 +118,7 @@ public:
     battery_rate_ = declare_parameter("battery_rate", 1.0);
     sonar_rate_ = declare_parameter("sonar_rate", 5.0);
     system_rate_ = declare_parameter("system_rate", 1.0);
-    battery_low_v_ = declare_parameter("battery_low_v", 10.8);   // 3.6 V/cell, 3S pack
+    battery_low_v_ = declare_parameter("battery_low_v", 7.0);    // 2x 18650 (2S): 3.5 V/cell
     temp_warn_c_ = declare_parameter("temp_warn_c", 75.0);
 
     char host[256] = {};

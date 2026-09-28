@@ -7,9 +7,11 @@
 //   vision/control           std_msgs/String  in: JSON, any of
 //       {"lane": true, "color": "yellow", "hsv": [h, s, v, h, s, v], "roi_top": 0.5, "two_lines": false,
 //        "detect": true, "model": "nano|tiny", "threshold": 0.4, "classes": ["cup", "person"],
-//        "follow": true, "speed": 0.3, "kp": 0.8, "ka": 0.5, "image": "annotated|mask|raw|off"}
-//   cmd_vel                  geometry_msgs/Twist  out: only while following a lane
+//        "follow": true, "search": true, "look": {"4": 2093, "5": 1826}, "speed": 0.7, "min_drive": 0.6,
+//        "kp": 0.8, "ka": 0.5, "image": "annotated|mask|raw|off"}
+//   cmd_vel                  geometry_msgs/Twist  out: only while searching for or following a lane
 //   command                  std_msgs/String  in: listens for {"action": "stop"} (stops following)
+//                                             out: arm_servos to pan the camera while searching
 //
 // The camera (the first USB camera, or the `camera` parameter) is read on its own
 // thread and may be plugged in or out while the node runs. Lane tracking runs on
@@ -17,8 +19,11 @@
 //
 // Lane following publishes cmd_vel; command_node on the same robot still applies
 // its limits (speed cap, obstacle stop, 0.5 s cmd_vel timeout). Following is off
-// at start, stops on a "stop" command, and stops when the lane is lost for
-// `lost_timeout` seconds.
+// at start and stops on a "stop" command. With "search" (default) the camera on
+// the arm is first put in the `look` pose and panned with the base servo to find
+// the lane, the robot turns to face it, follows it, and searches again when it
+// is lost for `lost_timeout` s (robot_vision/lane_seeker.hpp). Without, it only
+// follows a lane already in view and stops when it is lost.
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
@@ -45,6 +50,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "robot_vision/lane.hpp"
+#include "robot_vision/lane_seeker.hpp"
 #include "robot_vision/yolox.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -83,6 +89,11 @@ double seconds_since(Clock::time_point t)
 {
   return std::chrono::duration<double>(Clock::now() - t).count();
 }
+
+double now_s()
+{
+  return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+}
 }  // namespace
 
 class VisionNode : public rclcpp::Node
@@ -98,13 +109,17 @@ public:
     threads_ = declare_parameter("detect_threads", 3);
     image_rate_ = declare_parameter("image_rate", 3.0);
     image_width_ = declare_parameter("image_width", 320);
-    lost_timeout_ = declare_parameter("lost_timeout", 1.0);
+    seeker_.config().lost_timeout = declare_parameter("lost_timeout", 1.0);
+    search_ = declare_parameter("search", true);
+    // The arm pose that shows the floor ahead (robot01, 2026-09-28: elbow and
+    // shoulder only; the base servo pans). JSON {"servo": pulse}.
+    look_ = json::parse(declare_parameter("look", std::string(R"({"4": 2093, "5": 1826})")));
 
     lane_on_ = declare_parameter("lane", true);
     std::string color = declare_parameter("lane_color", std::string("yellow"));
-    if (!robot_vision::color_preset(color, lane_cfg_.ranges)) {
+    if (!robot_vision::color_preset(color, lane_cfg_)) {
       RCLCPP_WARN(get_logger(), "unknown lane_color '%s', using yellow", color.c_str());
-      robot_vision::color_preset(color = "yellow", lane_cfg_.ranges);
+      robot_vision::color_preset(color = "yellow", lane_cfg_);
     }
     color_ = color;
     lane_cfg_.roi_top = declare_parameter("roi_top", 0.5);
@@ -118,6 +133,7 @@ public:
     image_pub_ = create_publisher<sensor_msgs::msg::CompressedImage>(
       "vision/image/compressed", rclcpp::SensorDataQoS().keep_last(1));
     cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+    arm_pub_ = create_publisher<std_msgs::msg::String>("command", 10);
     control_sub_ = create_subscription<std_msgs::msg::String>("vision/control", 10,
       [this](const std_msgs::msg::String & m) {on_control(m.data);});
     command_sub_ = create_subscription<std_msgs::msg::String>("command", 10,
@@ -144,7 +160,7 @@ public:
     for (auto * t : {&capture_thread_, &process_thread_, &detect_thread_}) {
       if (t->joinable()) {t->join();}
     }
-    if (following_) {cmd_vel_pub_->publish(geometry_msgs::msg::Twist());}
+    if (following_) {cmd_vel_pub_->publish(geometry_msgs::msg::Twist());}   // (no locks: threads are gone)
   }
 
 private:
@@ -288,33 +304,56 @@ private:
   void follow(const robot_vision::LaneResult & lane)
   {
     if (!following_) {return;}
-    if (lane.found) {last_seen_ns_ = Clock::now().time_since_epoch().count();}
-    if (seconds_since(Clock::time_point(Clock::duration(last_seen_ns_.load()))) > lost_timeout_) {
-      set_follow(false, "lane lost");
-      return;
+    std::lock_guard<std::mutex> lock(seek_mutex_);
+    apply(seeker_.update(now_s(), lane));
+  }
+
+  // Does what the seeker asks. Called with seek_mutex_ held.
+  void apply(const robot_vision::SeekStep & step, const json & extra_pulses = json::object())
+  {
+    json pulses = extra_pulses;
+    if (step.base) {pulses["6"] = *step.base;}
+    if (!pulses.empty()) {
+      std_msgs::msg::String m;
+      m.data = json{{"action", "arm_servos"}, {"pulses", pulses},
+        {"ms", extra_pulses.empty() ? 400 : 800}, {"id", "lane-search"}}.dump();
+      arm_pub_->publish(m);
     }
-    geometry_msgs::msg::Twist t;
-    if (lane.found) {
-      std::lock_guard<std::mutex> lock(settings_mutex_);
-      // Line to the right (offset > 0) or heading right (angle > 0): turn right (negative z).
-      const double turn = std::clamp(-(kp_ * lane.offset + ka_ * lane.angle), -1.0, 1.0);
-      t.angular.z = turn;
-      t.linear.x = speed_ * (1.0 - 0.5 * std::abs(turn));   // slow down in curves
-    }   // lane briefly not seen: stand still until it is back or the timeout ends following
-    cmd_vel_pub_->publish(t);
+    if (step.drive) {
+      geometry_msgs::msg::Twist t;
+      t.linear.x = step.forward;
+      t.angular.z = step.turn;
+      cmd_vel_pub_->publish(t);
+    }
+    if (!step.event.empty()) {
+      RCLCPP_INFO(get_logger(), "lane: %s", step.event.c_str());
+      set_event("lane: " + step.event);
+    }
+    following_ = seeker_.active();
+    phase_ = robot_vision::to_string(seeker_.phase());
   }
 
   void set_follow(bool on, const std::string & why)
   {
-    const bool was = following_.exchange(on);
-    if (was && !on) {
-      cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
-      RCLCPP_INFO(get_logger(), "lane following stopped: %s", why.c_str());
-    } else if (!was && on) {
-      last_seen_ns_ = Clock::now().time_since_epoch().count();
-      RCLCPP_INFO(get_logger(), "lane following started");
+    std::lock_guard<std::mutex> lock(seek_mutex_);
+    if (!on) {
+      if (seeker_.active()) {apply(seeker_.stop(why));}
+      return;
     }
-    if (was != on) {set_event(std::string("following ") + (on ? "started" : "stopped: " + why));}
+    bool search;
+    json look;
+    {
+      std::lock_guard<std::mutex> settings(settings_mutex_);
+      auto & c = seeker_.config();
+      c.speed = speed_;
+      c.min_drive = min_drive_;
+      c.kp = kp_;
+      c.ka = ka_;
+      search = search_;
+      look = look_;
+    }
+    // The look pose goes out with the first pan, in one command.
+    apply(seeker_.start(now_s(), search), search && look.is_object() ? look : json::object());
   }
 
   // ------------------------------------------------------------ detection
@@ -378,6 +417,7 @@ private:
   // --------------------------------------------------------------- control
   void on_control(const std::string & data)
   {
+    follow_request_ = -1;
     try {
       const json c = json::parse(data);
       std::lock_guard<std::mutex> lock(settings_mutex_);
@@ -408,7 +448,23 @@ private:
         for (const auto & n : c["classes"]) {classes_.insert(n.get<std::string>());}
       }
       if (c.contains("detect")) {detect_on_ = c["detect"].get<bool>();}
-      if (c.contains("speed")) {speed_ = std::clamp(c["speed"].get<double>(), 0.0, 0.6);}
+      if (c.contains("speed")) {speed_ = std::clamp(c["speed"].get<double>(), 0.0, 1.0);}
+      if (c.contains("min_drive")) {min_drive_ = std::clamp(c["min_drive"].get<double>(), 0.0, 1.0);}
+      if (c.contains("search")) {search_ = c["search"].get<bool>();}
+      if (c.contains("look")) {
+        const auto & l = c["look"];
+        if (!l.is_null() && !l.is_boolean() && !l.is_object()) {
+          throw std::invalid_argument("look is {\"servo\": pulse, ...}, or false to leave the arm");
+        }
+        if (l.is_object()) {
+          for (const auto & [k, v] : l.items()) {
+            const int servo = std::stoi(k), pulse = v.get<int>();
+            if (servo != 3 && servo != 4 && servo != 5) {throw std::invalid_argument("look sets servos 3, 4, 5");}
+            if (pulse < 500 || pulse > 2500) {throw std::invalid_argument("look pulses are 500..2500");}
+          }
+        }
+        look_ = l.is_object() ? l : json();
+      }
       if (c.contains("kp")) {kp_ = std::clamp(c["kp"].get<double>(), 0.0, 3.0);}
       if (c.contains("ka")) {ka_ = std::clamp(c["ka"].get<double>(), 0.0, 3.0);}
       if (c.contains("image")) {
@@ -422,13 +478,16 @@ private:
         const bool on = c["follow"].get<bool>();
         if (on && !lane_on_) {throw std::invalid_argument("turn lane tracking on before following");}
         if (on && !camera_ok_) {throw std::invalid_argument("no camera");}
-        set_follow(on, "asked");
+        follow_request_ = on ? 1 : 0;
+      } else {
+        set_event("settings changed");
       }
-      if (!c.contains("follow")) {set_event("settings changed");}
     } catch (const std::exception & e) {
       set_event(std::string("control refused: ") + e.what());
       RCLCPP_WARN(get_logger(), "control refused: %s", e.what());
     }
+    // After settings_mutex_ is released (set_follow takes seek_mutex_, then settings_mutex_).
+    if (follow_request_ >= 0) {set_follow(follow_request_ == 1, "asked");}
     publish_state(false);
   }
 
@@ -454,7 +513,8 @@ private:
         {"two_lines", lane_cfg_.two_lines}, {"lane_fps", std::round(lane_fps_.load() * 10) / 10},
         {"detect", detect_on_.load()}, {"model", model_}, {"threshold", threshold_},
         {"classes", classes_}, {"detect_ms", std::lround(detect_ms_.load())},
-        {"follow", following_.load()}, {"speed", speed_}, {"kp", kp_}, {"ka", ka_},
+        {"follow", following_.load()}, {"phase", phase_.load()}, {"search", search_}, {"look", look_},
+        {"speed", speed_}, {"min_drive", min_drive_}, {"kp", kp_}, {"ka", ka_},
         {"image", image_mode_}, {"colors", robot_vision::color_presets()}, {"event", event}};
     }
     std_msgs::msg::String msg;
@@ -465,14 +525,21 @@ private:
   // parameters
   std::string camera_param_, models_dir_;
   int64_t cam_w_, cam_h_, threads_, image_width_;
-  double image_rate_, lost_timeout_, camera_fps_ = 0.0;
+  double image_rate_, camera_fps_ = 0.0;
   // settings (vision/control)
   std::mutex settings_mutex_;
   robot_vision::LaneConfig lane_cfg_;
   std::string color_, model_, image_mode_ = "annotated";
   std::string event_;   // under status_mutex_
   std::atomic<bool> lane_on_{true}, detect_on_{false}, following_{false};
-  double threshold_ = 0.4, speed_ = 0.3, kp_ = 0.8, ka_ = 0.5;
+  double threshold_ = 0.4, speed_ = 0.7, min_drive_ = 0.6, kp_ = 0.8, ka_ = 0.5;
+  bool search_ = true;
+  json look_;
+  int follow_request_ = -1;          // on_control only: -1 none, 0 stop, 1 start
+  // search + follow (seek_mutex_ before settings_mutex_)
+  std::mutex seek_mutex_;
+  robot_vision::LaneSeeker seeker_;
+  std::atomic<const char *> phase_{"idle"};
   std::set<std::string> classes_;
   // camera
   std::string camera_dev_;
@@ -486,12 +553,11 @@ private:
   std::mutex det_mutex_;
   std::vector<robot_vision::Detection> dets_;
   Clock::time_point dets_time_{}, last_lane_time_ = Clock::now(), last_state_ = Clock::now();
-  std::atomic<Clock::rep> last_seen_ns_{0};
   std::atomic<double> detect_ms_{0.0}, lane_fps_{0.0};
   std::mutex status_mutex_;   // event_, camera_dev_
 
   std::thread capture_thread_, process_thread_, detect_thread_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr lane_pub_, det_pub_, state_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr lane_pub_, det_pub_, state_pub_, arm_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr image_pub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_sub_, command_sub_;

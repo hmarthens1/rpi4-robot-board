@@ -41,7 +41,7 @@ int main(int argc, char ** argv)
   cv::Mat frame;
   cv::resize(img, frame, {640, 480});
   robot_vision::LaneConfig cfg;
-  robot_vision::color_preset("yellow", cfg.ranges);
+  robot_vision::color_preset("yellow", cfg);
   std::printf("lane tracking, 640x480 -> 320 px:  %6.1f ms\n\n",
     time_ms(runs * 10, [&] {robot_vision::detect_lane(frame, cfg);}));
 

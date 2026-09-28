@@ -18,7 +18,7 @@ find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs videoio)   # ap
 find_package(ncnn REQUIRED)                  # built by scripts/install_vision.sh into /usr/local
 
 # ---- vision library (no ROS): lane tracking and YOLOX
-add_library(robot_vision_core STATIC src/lane.cpp src/yolox.cpp)
+add_library(robot_vision_core STATIC src/lane.cpp src/lane_seeker.cpp src/yolox.cpp)
 target_include_directories(robot_vision_core PUBLIC include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(robot_vision_core ${OpenCV_LIBS} ncnn)
 set_target_properties(robot_vision_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -36,6 +36,9 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_lane test/test_lane.cpp)
   target_link_libraries(test_lane robot_vision_core)
+  target_compile_definitions(test_lane PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+  ament_add_gtest(test_seeker test/test_seeker.cpp)
+  target_link_libraries(test_seeker robot_vision_core)
 endif()
 
 ament_package()

@@ -23,6 +23,55 @@ const std::map<std::string, std::vector<HsvRange>> & presets()
   };
   return p;
 }
+
+// Measured on robot01's camera (2026-09-28): over-exposed yellow tape on the grey
+// floor sits at 111-115 deg with chroma 14-33; the floor itself within ~5.
+// Orange/wood (~57 deg) and green (~140) stay outside yellow's band.
+const std::map<std::string, LabHue> & lab_presets()
+{
+  static const std::map<std::string, LabHue> p = {
+    {"yellow", {104, 20, 10}},
+    {"green", {147, 22, 10}},
+    {"blue", {-70, 25, 12}},
+    {"red", {35, 15, 15}},
+  };
+  return p;
+}
+
+// Median of an 8-bit single-channel image, from its histogram.
+double median8(const cv::Mat & m)
+{
+  int hist[256] = {0};
+  for (int r = 0; r < m.rows; ++r) {
+    const uchar * p = m.ptr<uchar>(r);
+    for (int c = 0; c < m.cols; ++c) {++hist[p[c]];}
+  }
+  const size_t half = m.total() / 2;
+  size_t seen = 0;
+  for (int v = 0; v < 256; ++v) {
+    seen += hist[v];
+    if (seen > half) {return v;}
+  }
+  return 128;
+}
+
+// Pixels whose colour, relative to the median colour of the area (the floor),
+// points in hue's direction by at least min_chroma.
+cv::Mat lab_mask(const cv::Mat & blurred_bgr, const LabHue & hue)
+{
+  cv::Mat lab;
+  cv::cvtColor(blurred_bgr, lab, cv::COLOR_BGR2Lab);
+  std::vector<cv::Mat> ch;
+  cv::split(lab, ch);
+  cv::Mat da, db;
+  ch[1].convertTo(da, CV_32F, 1.0, -median8(ch[1]));
+  ch[2].convertTo(db, CV_32F, 1.0, -median8(ch[2]));
+  const double ux = std::cos(hue.angle_deg * M_PI / 180), uy = std::sin(hue.angle_deg * M_PI / 180);
+  const cv::Mat along = ux * da + uy * db;                    // chroma towards the colour
+  const cv::Mat across = cv::abs(-uy * da + ux * db);         // and sideways from it
+  const cv::Mat mask = (along >= hue.min_chroma) & (across <= along * std::tan(hue.tol_deg * M_PI / 180));
+  return mask;
+}
 }  // namespace
 
 bool color_preset(const std::string & name, std::vector<HsvRange> & ranges)
@@ -30,6 +79,14 @@ bool color_preset(const std::string & name, std::vector<HsvRange> & ranges)
   const auto it = presets().find(name);
   if (it == presets().end()) {return false;}
   ranges = it->second;
+  return true;
+}
+
+bool color_preset(const std::string & name, LaneConfig & cfg)
+{
+  if (!color_preset(name, cfg.ranges)) {return false;}
+  const auto it = lab_presets().find(name);
+  cfg.lab = it == lab_presets().end() ? std::nullopt : std::optional<LabHue>(it->second);
   return true;
 }
 
@@ -43,7 +100,7 @@ std::vector<std::string> color_presets()
 LaneResult detect_lane(const cv::Mat & bgr, const LaneConfig & cfg)
 {
   LaneResult r;
-  if (bgr.empty() || cfg.ranges.empty()) {return r;}
+  if (bgr.empty() || (cfg.ranges.empty() && !cfg.lab)) {return r;}
   const double scale = std::min(1.0, static_cast<double>(cfg.width) / bgr.cols);
   cv::Mat small;
   if (scale < 1.0) {
@@ -52,14 +109,20 @@ LaneResult detect_lane(const cv::Mat & bgr, const LaneConfig & cfg)
     small = bgr;
   }
   const int y0 = std::clamp(static_cast<int>(cfg.roi_top * small.rows), 0, small.rows - 1);
-  cv::Mat roi = small.rowRange(y0, small.rows), hsv;
-  cv::GaussianBlur(roi, hsv, cv::Size(5, 5), 0);
-  cv::cvtColor(hsv, hsv, cv::COLOR_BGR2HSV);
+  cv::Mat roi = small.rowRange(y0, small.rows), blurred;
+  cv::GaussianBlur(roi, blurred, cv::Size(5, 5), 0);
 
-  cv::Mat mask = cv::Mat::zeros(hsv.size(), CV_8U), part;
-  for (const auto & range : cfg.ranges) {
-    cv::inRange(hsv, range.lo, range.hi, part);
-    mask |= part;
+  cv::Mat mask;
+  if (cfg.lab) {
+    mask = lab_mask(blurred, *cfg.lab);
+  } else {
+    cv::Mat hsv, part;
+    cv::cvtColor(blurred, hsv, cv::COLOR_BGR2HSV);
+    mask = cv::Mat::zeros(hsv.size(), CV_8U);
+    for (const auto & range : cfg.ranges) {
+      cv::inRange(hsv, range.lo, range.hi, part);
+      mask |= part;
+    }
   }
   cv::morphologyEx(mask, mask, cv::MORPH_OPEN, cv::getStructuringElement(cv::MORPH_RECT, {3, 3}));
   r.mask = mask;

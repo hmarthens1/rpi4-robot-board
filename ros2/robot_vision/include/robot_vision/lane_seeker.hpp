@@ -1,7 +1,7 @@
 // Find a lane with a camera on a panning servo (robot01's arm base), face it
 // with the wheels, then follow it; search again when it is lost.
 //
-//   Sweep   the camera pans through `base_steps` (centre first, then out to
+//   Sweep   the camera pans through `pan_steps` (centre first, then out to
 //           both sides); at each step it waits `settle_s` and then judges
 //           `looks` frames. A lane seen in `need` of them gives a bearing:
 //             bearing = pan angle - atan(offset * tan_half_fov)   (+ = left)
@@ -30,8 +30,9 @@ namespace robot_vision
 
 struct SeekConfig
 {
-  // Camera pan servo (robot01: base servo 6; higher pulse = left).
-  std::vector<int> base_steps{1500, 1700, 1300, 1900, 1100, 2100, 900};
+  // Camera pan servo (robot01: base servo 6; higher pulse = left). The steps are
+  // relative to base_centre, the pulse that looks straight ahead.
+  std::vector<int> pan_steps{0, 200, -200, 400, -400, 600, -600};
   int base_centre = 1500;
   double base_us_per_deg = 11.71;   // measured on robot01 (fleet_vision.triangulate)
   double tan_half_fov = 0.584;      // 160 px / f = 274 px at 320 px wide

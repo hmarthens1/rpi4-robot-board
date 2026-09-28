@@ -40,7 +40,7 @@ YOLOv8n/YOLO11n exported to ncnn (more accurate, AGPL), or a Coral/Hailo acceler
 {"lane": true, "color": "yellow|blue|green|red|black|white", "hsv": [20, 80, 80, 35, 255, 255],
  "roi_top": 0.5, "two_lines": false,
  "detect": true, "model": "nano|tiny", "threshold": 0.4, "classes": ["cup", "person"],
- "follow": true, "search": true, "look": {"4": 2093, "5": 1826}, "speed": 0.7, "min_drive": 0.6,
+ "follow": true, "search": true, "look": {"1": 2500, "3": 725, "4": 2444, "5": 1486, "6": 1432}, "speed": 0.7, "min_drive": 0.6,
  "kp": 0.8, "ka": 0.5,
  "image": "annotated|mask|raw|off"}
 ```
@@ -73,9 +73,10 @@ is what matches.
 **Search, then follow** (`search`: true, the default; `lane_seeker.cpp`). robot01's camera is on
 the arm, so it can look around without moving the robot:
 
-1. the arm goes to the `look` pose (elbow 2093, shoulder 1826: the floor ahead; set your own with
-   `"look": {"3": .., "4": .., "5": ..}`, or `false` to leave the arm where it is);
-2. the base servo pans 0, +17, -17, +34, -34, +51, -51 deg (the side the lane was last seen
+1. the arm goes to the `look` pose (robot01's, set by hand: gripper 2500, wrist 725, elbow 2444,
+   shoulder 1486, base 1432; set your own with `"look": {"1": .., "3": .., "4": .., "5": .., "6": ..}`,
+   or `false` to leave the arm where it is). Its base pulse is "straight ahead";
+2. the base servo pans 0, +17, -17, +34, -34, +51, -51 deg around it (the side the lane was last seen
    first); at each step it waits 0.7 s and needs the lane in 3 of 4 frames;
 3. found: bearing = pan angle - atan(offset · 0.584); the robot turns in place by that much
    (150 deg/s at full command) while the camera pans back to the centre, then looks again;

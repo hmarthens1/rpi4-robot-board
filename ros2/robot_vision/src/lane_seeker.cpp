@@ -69,8 +69,9 @@ SeekStep LaneSeeker::stop(const std::string & why)
 SeekStep LaneSeeker::begin_sweep(double now, int prefer_side)
 {
   // Centre first, then each distance from the centre with the preferred side first.
-  order_ = cfg_.base_steps;
   const int c = cfg_.base_centre;
+  order_.clear();
+  for (const int step : cfg_.pan_steps) {order_.push_back(std::clamp(c + step, 500, 2500));}
   std::stable_sort(order_.begin(), order_.end(), [&](int a, int b) {
       const int da = std::abs(a - c), db = std::abs(b - c);
       if (da != db) {return da < db;}

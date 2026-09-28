@@ -104,6 +104,18 @@ TEST(Seeker, LaneAheadFollowsAfterOneLook)
   EXPECT_GE(step.forward, s.config().min_drive);
 }
 
+TEST(Seeker, PansAroundTheLookPosesBase)
+{
+  robot_vision::SeekConfig cfg;
+  cfg.base_centre = 1432;                      // robot01's straight ahead in its look pose
+  LaneSeeker s(cfg);
+  EXPECT_EQ(*s.start(0.0, true).base, 1432);
+  double t = 0.8;
+  SeekStep step;
+  while (!step.base) {step = s.update(t += 0.05, none());}
+  EXPECT_EQ(*step.base, 1632);
+}
+
 TEST(Seeker, SweepOrderPrefersOneSide)
 {
   LaneSeeker s;

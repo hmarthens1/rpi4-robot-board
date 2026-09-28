@@ -7,7 +7,8 @@
 //   vision/control           std_msgs/String  in: JSON, any of
 //       {"lane": true, "color": "yellow", "hsv": [h, s, v, h, s, v], "roi_top": 0.5, "two_lines": false,
 //        "detect": true, "model": "nano|tiny", "threshold": 0.4, "classes": ["cup", "person"],
-//        "follow": true, "search": true, "look": {"4": 2093, "5": 1826}, "speed": 0.7, "min_drive": 0.6,
+//        "follow": true, "search": true, "look": {"3": 725, "4": 2444, "5": 1486, "6": 1432}, "speed": 0.7,
+//        "min_drive": 0.6,
 //        "kp": 0.8, "ka": 0.5, "image": "annotated|mask|raw|off"}
 //   cmd_vel                  geometry_msgs/Twist  out: only while searching for or following a lane
 //   command                  std_msgs/String  in: listens for {"action": "stop"} (stops following)
@@ -111,9 +112,10 @@ public:
     image_width_ = declare_parameter("image_width", 320);
     seeker_.config().lost_timeout = declare_parameter("lost_timeout", 1.0);
     search_ = declare_parameter("search", true);
-    // The arm pose that shows the floor ahead (robot01, 2026-09-28: elbow and
-    // shoulder only; the base servo pans). JSON {"servo": pulse}.
-    look_ = json::parse(declare_parameter("look", std::string(R"({"4": 2093, "5": 1826})")));
+    // The arm pose that shows the floor ahead: robot01's, set by hand on 2026-09-28.
+    // JSON {"servo": pulse}; servo 6 (base) is the straight-ahead the search pans around.
+    look_ = json::parse(declare_parameter("look",
+      std::string(R"({"1": 2500, "3": 725, "4": 2444, "5": 1486, "6": 1432})")));
 
     lane_on_ = declare_parameter("lane", true);
     std::string color = declare_parameter("lane_color", std::string("yellow"));
@@ -312,7 +314,7 @@ private:
   void apply(const robot_vision::SeekStep & step, const json & extra_pulses = json::object())
   {
     json pulses = extra_pulses;
-    if (step.base) {pulses["6"] = *step.base;}
+    if (step.base) {pulses["6"] = *step.base;}   // the pan wins over the look pose's base
     if (!pulses.empty()) {
       std_msgs::msg::String m;
       m.data = json{{"action", "arm_servos"}, {"pulses", pulses},
@@ -351,6 +353,7 @@ private:
       c.ka = ka_;
       search = search_;
       look = look_;
+      c.base_centre = look.is_object() && look.contains("6") ? look["6"].get<int>() : 1500;
     }
     // The look pose goes out with the first pan, in one command.
     apply(seeker_.start(now_s(), search), search && look.is_object() ? look : json::object());
@@ -459,7 +462,7 @@ private:
         if (l.is_object()) {
           for (const auto & [k, v] : l.items()) {
             const int servo = std::stoi(k), pulse = v.get<int>();
-            if (servo != 3 && servo != 4 && servo != 5) {throw std::invalid_argument("look sets servos 3, 4, 5");}
+            if (servo < 1 || servo > 6 || servo == 2) {throw std::invalid_argument("look sets servos 1, 3, 4, 5, 6");}
             if (pulse < 500 || pulse > 2500) {throw std::invalid_argument("look pulses are 500..2500");}
           }
         }

@@ -118,6 +118,8 @@ Wants=network-online.target
 User=$REAL_USER
 Environment=ROS_DOMAIN_ID=$DOMAIN
 Environment=OMP_WAIT_POLICY=PASSIVE
+# UDP only: shared memory with the root-owned command_node doesn't deliver (see the file)
+Environment=FASTRTPS_DEFAULT_PROFILES_FILE=$REPO/ros2/robot_vision/config/fastdds_udp.xml
 ExecStart=/bin/bash -c 'source $WS/install/setup.bash && exec ros2 run robot_vision vision_node --ros-args -r __ns:=/$NS -p models_dir:=$MODELS'
 Restart=on-failure
 RestartSec=3

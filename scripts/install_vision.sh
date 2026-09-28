@@ -129,7 +129,8 @@ Nice=5
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now robot-vision.service >/dev/null 2>&1
+systemctl enable robot-vision.service >/dev/null 2>&1
+systemctl restart robot-vision.service   # enable --now leaves a running old binary running
 sleep 4
 systemctl is-active --quiet robot-vision && ok "robot-vision running" || die "robot-vision did not start: journalctl -u robot-vision"
 journalctl -u robot-vision -n 3 --no-pager -o cat
